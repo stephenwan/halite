@@ -1,0 +1,7 @@
+*.log
+*.hlt
+*.exe
+runGame*
+*.pyc
+*.png
+*.zip
