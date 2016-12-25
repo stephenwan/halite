@@ -15,7 +15,7 @@ while True:
     game_map.get_frame()
     gm = GameMaster(myID, game_map, file_log)
 
-    moves = gm.move_my_locs()
+    moves = gm.play()
     rounds += 1
 
     hlt.send_frame(moves)
