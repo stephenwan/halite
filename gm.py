@@ -179,6 +179,7 @@ class GameMaster:
             if self.d.strs[iloc] > STR_BD_MAX:
                 target = random.choice(targets)
                 moves.append(Move(self.get_square(loc), dir_from_move(self.get_move(loc, target))))
+                self.d.states[iloc] = S_MOVED
             else:
                 beatable_targets = [ t for t in targets if self.d.strs[iloc] > self.d.strs[_idx(t)]]
                 if len(beatable_targets) > 0:
