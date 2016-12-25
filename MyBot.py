@@ -7,7 +7,7 @@ from gm import GameMaster
 myID, game_map = hlt.get_init()
 hlt.send_init("MyPythonBot")
 
-file_log = open("debug.log", "w")
+file_log = open(str(myID) + "_debug.log", "w")
 
 rounds = 0
 
