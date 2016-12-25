@@ -23,7 +23,7 @@ def _idx(loc):
 
 
 S_INIT, S_MOVED, S_GATHER_HERE, S_NOT_GATHER_HERE = (0, 1, 2, 3)
-STR_THRESHOLD_MIN, STR_THRESHOLD_MAX, STR_BD_MAX = (10, 60, 210)
+STR_THRESHOLD_MIN, STR_THRESHOLD_MAX, STR_BD_MAX, STR_OVERSHOOT = (10, 60, 210, 50)
 BF_RADIUS = 10
 
 class GameData:
@@ -146,16 +146,24 @@ class GameMaster:
 
         for loc in self.d.loc_strategicspots:
             bds = [ l for l in self.neighbour_locs(loc) if self.d.owns[ _idx(l)]]
-            if sum([ self.d.strs[_idx(bd)] for bd in bds ]) >= self.d.strs[_idx(loc)]:
-                for bd in bds:
-                    moves.append(Move(self.get_square(bd), dir_from_move(self.get_move(bd, loc))))
-                    self.d.states[_idx(bd)] = S_MOVED
+
+            bds_with_sufficient_str = [ l for l in bds if self.d.strs[_idx(l)] > self.d.strs[_idx(loc)]]
+            strs = [ self.d.strs[_idx(l)] for l in bds_with_sufficient_str ]
+
+            if len(bds_with_sufficient_str) > 0:
+                t = bds_with_sufficient_str[np.argmin(strs)]
+                moves.append(Move(self.get_square(t), dir_from_move(self.get_move(t, loc))))
+                self.d.states[_idx(t)] = S_MOVED
             else:
-                for bd in bds:
-                    self.d.states[_idx(bd)] = S_GATHER_HERE
+                if sum([ self.d.strs[_idx(bd)] for bd in bds ]) > self.d.strs[_idx(loc)]:
+                    for bd in bds:
+                        moves.append(Move(self.get_square(bd), dir_from_move(self.get_move(bd, loc))))
+                        self.d.states[_idx(bd)] = S_MOVED
+                else:
+                    for bd in bds:
+                        self.d.states[_idx(bd)] = S_GATHER_HERE
 
         return moves
-
 
     def conquer(self):
         moves = []
@@ -166,17 +174,19 @@ class GameMaster:
 
             targets = [n
                        for n in self.neighbour_locs(loc)
-                       if (not self.d.owns[_idx(n)]) and self.d.strs[iloc] > self.d.strs[_idx(n)]]
+                       if not self.d.owns[_idx(n)]]
 
-            if len(targets) > 0:
-                if (self.d.strs[iloc] < STR_BD_MAX
-                    and self.d.hostilestrs[iloc] > 0
-                    and self.d.strs[iloc] - self.d.hostilestrs[iloc] < self.d.bdstrdiffs[iloc]):
-                    self.d.states[iloc] = S_GATHER_HERE
-                else:
-                    target = random.choice(targets)
-                    moves.append(Move(self.get_square(loc), dir_from_move(self.get_move(loc, target))))
-                    self.d.states[iloc] = S_MOVED
+            if self.d.strs[iloc] > STR_BD_MAX:
+                target = random.choice(targets)
+                moves.append(Move(self.get_square(loc), dir_from_move(self.get_move(loc, target))))
+            else:
+                beatable_targets = [ t for t in targets if self.d.strs[iloc] > self.d.strs[_idx(t)]]
+                if len(beatable_targets) > 0:
+                    if (self.d.hostilestrs[iloc] == 0
+                        or self.d.strs[iloc] - self.d.hostilestrs[iloc] > self.d.bdstrdiffs[iloc]):
+                        target = random.choice(beatable_targets)
+                        moves.append(Move(self.get_square(loc), dir_from_move(self.get_move(loc, target))))
+                        self.d.states[iloc] = S_MOVED
         return moves
 
     def gather_here(self, loc):
@@ -184,7 +194,7 @@ class GameMaster:
         for neighbor in self.neighbour_locs(loc, only_owned=True):
             i = _idx(neighbor)
             if self.d.states[i] == S_INIT:
-                if self.d.strs[i] > STR_THRESHOLD_MIN :
+                if self.d.strs[i] > STR_THRESHOLD_MIN and self.d.strs[i] + self.d.strs[_idx(loc)] < 250 + STR_OVERSHOOT:
                     moves.append(Move(self.get_square(neighbor), dir_from_move(self.get_move(neighbor, loc))))
                     self.d.states[i] = S_MOVED
                 else:
@@ -225,10 +235,11 @@ class GameMaster:
                 else:
                     move_to_loc = self.nearestbd(loc)
 
-                the_move = self.get_move(loc, move_to_loc)
-                direction = dir_from_move(the_move)
-                moves.append(Move(self.get_square(loc), direction))
-                self.d.states[i] = S_MOVED
+                if self.distance(loc, move_to_loc) > 1 or self.d.strs[i] + self.d.strs[_idx(move_to_loc)] < 250 + STR_OVERSHOOT:
+                    the_move = self.get_move(loc, move_to_loc)
+                    direction = dir_from_move(the_move)
+                    moves.append(Move(self.get_square(loc), direction))
+                    self.d.states[i] = S_MOVED
         return moves
 
     def farm(self):
