@@ -85,8 +85,10 @@ class GameData:
         self.n_bds = len(self.loc_bds)
         self.n_bfs = len(self.loc_bfs)
 
-        factor = max(int(self.n_bds / 8), 1)
-        self.loc_sampled_bds = self.loc_bds[::factor]
+        sample_bd_factor = max(int(self.n_bds / 8), 1)
+        self.loc_sampled_bds = self.loc_bds[::sample_bd_factor]
+        sample_bf_factor = max(int(self.n_bfs / 16), 1)
+        self.loc_sampled_bfs = self.loc_bfs[::sample_bf_factor]
 
     def truthy_locs(self, boolboard):
         return np.array([np.array([x, y]) for y, x in zip(* np.where(boolboard))])
@@ -120,7 +122,7 @@ class GameMaster:
         if self.d.n_bfs == 0:
             return None
 
-        distances = np.array([self.distance(loc, l) for l in self.d.loc_bfs])
+        distances = np.array([self.distance(loc, l) for l in self.d.loc_sampled_bfs])
         min_index = np.argmin(distances)
         if distances[min_index] <= BF_RADIUS:
             return self.d.loc_bfs[min_index]
@@ -174,7 +176,10 @@ class GameMaster:
 
             targets = [n
                        for n in self.neighbour_locs(loc)
-                       if not self.d.owns[_idx(n)]]
+                       if not (self.d.owns[_idx(n)] or self.d.strategicspots[_idx(n)] )]
+
+            if len(targets) == 0:
+                continue
 
             if self.d.strs[iloc] > STR_BD_MAX:
                 target = random.choice(targets)
@@ -183,11 +188,9 @@ class GameMaster:
             else:
                 beatable_targets = [ t for t in targets if self.d.strs[iloc] > self.d.strs[_idx(t)]]
                 if len(beatable_targets) > 0:
-                    if (self.d.hostilestrs[iloc] == 0
-                        or self.d.strs[iloc] - self.d.hostilestrs[iloc] > self.d.bdstrdiffs[iloc]):
-                        target = random.choice(beatable_targets)
-                        moves.append(Move(self.get_square(loc), dir_from_move(self.get_move(loc, target))))
-                        self.d.states[iloc] = S_MOVED
+                    target = random.choice(beatable_targets)
+                    moves.append(Move(self.get_square(loc), dir_from_move(self.get_move(loc, target))))
+                    self.d.states[iloc] = S_MOVED
         return moves
 
     def gather_here(self, loc):
@@ -236,11 +239,10 @@ class GameMaster:
                 else:
                     move_to_loc = self.nearestbd(loc)
 
-                if self.distance(loc, move_to_loc) > 1 or self.d.strs[i] + self.d.strs[_idx(move_to_loc)] < 250 + STR_OVERSHOOT:
-                    the_move = self.get_move(loc, move_to_loc)
-                    direction = dir_from_move(the_move)
-                    moves.append(Move(self.get_square(loc), direction))
-                    self.d.states[i] = S_MOVED
+                the_move = self.get_move(loc, move_to_loc)
+                direction = dir_from_move(the_move)
+                moves.append(Move(self.get_square(loc), direction))
+                self.d.states[i] = S_MOVED
         return moves
 
     def farm(self):
