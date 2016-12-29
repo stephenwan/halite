@@ -157,16 +157,20 @@ class Strategy:
         if len(targets) == 0:
             return moves
 
-        sample_step = max(self.gd.sites_boundary.shape[0] // 8, 1)
-        sampled_boundary = self.gd.sites_boundary[::sample_step, 0]
+        surroundings = self.gd.sites_touch_mine[:,0];
+        if len(surroundings) == 0:
+            return moves
+
+        sample_step = max(len(surroundings) // 8, 1)
+        sampled_surroundings = surroundings[::sample_step]
 
         if self.logger is not None:
-            self.logger.write("\nsampled boundary\n%s\n" % str( sampled_boundary ))
+            self.logger.write("\nsampled boundary\n%s\n" % str( sampled_surroundings ))
 
         calculate_distance = np.vectorize(lambda loc1, loc2: self.geo.distance(loc1, loc2))
-        distances = calculate_distance(targets[:,np.newaxis], sampled_boundary)
+        distances = calculate_distance(targets[:,np.newaxis], sampled_surroundings)
 
-        move_to_sites = sampled_boundary[np.argmin(distances, axis=1)]
+        move_to_sites = sampled_surroundings[np.argmin(distances, axis=1)]
         unique_move_to_sites = np.unique(move_to_sites)
 
         for s in unique_move_to_sites:
@@ -236,9 +240,29 @@ class Strategy:
 
         return moves
 
+    def run_from_overstr(self):
+        targets = np.where(self.gotos != IDX_NAN)[0]
+        moves = []
+
+        while len(targets) > 0:
+            _targets = []
+            for s in targets:
+                goto = self.gotos[s]
+                if self.gd.is_mine[goto] and (self.states[goto] == STATE_INIT) and (self.gd.strs[s] + self.gd.strs[goto] >= STR_MAX):
+                    _targets.append(goto)
+                    direction = self.geo.get_direction(self.geo.locs[s], self.geo.locs[goto])
+                    move_to = self.geo.adjs[goto, direction]
+                    moves.append(Move(self.gd.squares[goto], direction))
+                    self.states[goto] = STATE_DONE
+                    self.gotos[goto] = move_to
+                    self.comefroms[move_to] = goto #may need to extend this to array
+
+            targets = _targets
+
+        return moves
 
     def execute(self):
-        return self.move_strong() + self.expand() + self.converging_attack() + self.finish_not_moved()
+        return self.move_strong() + self.expand() + self.converging_attack() + self.run_from_overstr() + self.finish_not_moved()
 
 
 
@@ -262,7 +286,7 @@ def load_game_map(myID, game_map):
 
 Map = namedtuple('Map', 'w h')
 
-test_game_map = GameMap("4 4", "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16", "2 0 1 1 2 0 3 1 1 0 3 1 4 0 71 96 93 157 151 141 63 93 157 93 96 71 93 63 141 101")
+test_game_map = GameMap("4 4", "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16", "1 0 15 1 71 96 93 157 151 141 63 93 157 93 96 71 93 63 141 101")
 
 d = load_game_map(1, test_game_map)
 d.analyze()
