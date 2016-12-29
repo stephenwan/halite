@@ -66,8 +66,12 @@ class Geo:
         d = np.minimum(np.abs(loc1 - loc2), tmp)
         return sum(d)
 
+    def reverse_direction(self, direction):
+        return [2, 3, 0, 1, 4, 7, 8, 5, 6][direction]
+
     def move(ifrom, direction):
         return self.adjs[ifrom, direction]
+
 
 
 class GameData:
@@ -179,7 +183,6 @@ class Strategy:
 
     def expand(self):
         sort_type = [('breaths', int), ('production', int), ('site', int)]
-
         moves = []
 
         for b_info in self.gd.sites_boundary:
@@ -207,6 +210,24 @@ class Strategy:
 
         return moves
 
+    def converging_attack(self):
+        converging_points = self.gd.sites_touch_mine[:,0][self.gd.sites_touch_mine[:,1] > 1]
+        moves = []
+
+        for point in converging_points:
+            mine_not_moved = [ (direction, s) for (direction, s) in enumerate( self.geo.adjs[point, 0:4])
+                               if self.states[s] == STATE_INIT and self.gd.is_mine[s]]
+
+            if sum([ self.gd.strs[s] for (direction, s) in mine_not_moved]) > self.gd.strs[point]:
+                for direction, s in mine_not_moved:
+                    moves.append(Move(self.gd.squares[s], self.geo.reverse_direction(direction)))
+                    self.states[s] = STATE_DONE
+                    self.gotos[s] = point
+                    self.comefroms[point] = s #may need to extend this to array
+
+        return moves
+
+
     def finish_not_moved(self):
         moves = []
         for target in np.where(self.states != STATE_DONE)[0]:
@@ -217,7 +238,7 @@ class Strategy:
 
 
     def execute(self):
-        return self.move_strong() + self.expand() + self.finish_not_moved()
+        return self.move_strong() + self.expand() + self.converging_attack() + self.finish_not_moved()
 
 
 
@@ -239,14 +260,14 @@ def load_game_map(myID, game_map):
 
     return GameData(myID, geo, owners, strengths, productions, game_map)
 
-# Map = namedtuple('Map', 'w h')
+Map = namedtuple('Map', 'w h')
 
-# test_game_map = GameMap("4 4", "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16", "2 0 1 1 2 0 3 1 1 0 3 1 4 0 71 96 93 157 101 141 63 93 157 93 96 71 93 63 141 101")
+test_game_map = GameMap("4 4", "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16", "2 0 1 1 2 0 3 1 1 0 3 1 4 0 71 96 93 157 151 141 63 93 157 93 96 71 93 63 141 101")
 
-# d = load_game_map(1, test_game_map)
-# d.analyze()
-# s = Strategy(d)
-# s.execute()
+d = load_game_map(1, test_game_map)
+d.analyze()
+s = Strategy(d)
+#s.execute()
 
 
 if __name__ == "__main__":
