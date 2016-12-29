@@ -43,7 +43,7 @@ class Geo:
         return y * self.w + x
 
     def get_container(self, t=int):
-        return np.arange(self.n, dtype=t)
+        return np.zeros(self.n, dtype=t)
 
     def get_direction(self, loc_from, loc_to):
         if np.array_equal(loc_from, loc_to):
@@ -104,6 +104,7 @@ class GameData:
         self._build_boundary()
         self._build_sites_touch_mine()
         self._build_strength_difference_at_boundary()
+        self._build_nearby_enemies()
 
         if self.logger is not None:
             self.logger.write("\nowners\n%s\n" % str( self.owners.reshape(self.geo.h, self.geo.w)))
@@ -132,6 +133,16 @@ class GameData:
         other_str = np.min(np.where(t == STR_NAN, 999, t), axis=1)
         self.sites_str_diff = np.c_[ boundary, other_str - lookup_str(boundary)]
 
+    def _build_nearby_enemies(self):
+        def _any_enemy_in_sites(sites):
+            return np.any( self.is_oppo[sites] )
+        targets = self.sites_touch_mine[:,0]
+        self.sites_nearby_enemy = targets[ np.apply_along_axis(_any_enemy_in_sites, 1, self.geo.adjs[targets])]
+        self.nearby_enemy = self.geo.get_container(bool)
+        self.nearby_enemy[ self.sites_nearby_enemy ] = True
+
+
+
 
 class Strategy:
     def __init__(self, gameData):
@@ -157,20 +168,25 @@ class Strategy:
         if len(targets) == 0:
             return moves
 
-        surroundings = self.gd.sites_touch_mine[:,0];
+        calculate_distance = np.vectorize(lambda loc1, loc2: self.geo.distance(loc1, loc2))
+
+        surroundings = np.array([ s for s in self.gd.sites_touch_mine[:,0] if not self.gd.nearby_enemy[s]])
+
+        enemies = self.gd.sites_nearby_enemy
+        enemy_alert_radius = 15
+        if len(enemies) > 0:
+            ds = calculate_distance(enemies[:, np.newaxis], surroundings)
+            ds[ ds < enemy_alert_radius ] = -1
+            surroundings = surroundings[ np.all( ds != -1, axis=0)]
+            surroundings = np.concatenate((enemies, surroundings))
+
+
         if len(surroundings) == 0:
             return moves
 
-        sample_step = max(len(surroundings) // 8, 1)
-        sampled_surroundings = surroundings[::sample_step]
+        distances = calculate_distance(targets[:,np.newaxis], surroundings)
 
-        if self.logger is not None:
-            self.logger.write("\nsampled boundary\n%s\n" % str( sampled_surroundings ))
-
-        calculate_distance = np.vectorize(lambda loc1, loc2: self.geo.distance(loc1, loc2))
-        distances = calculate_distance(targets[:,np.newaxis], sampled_surroundings)
-
-        move_to_sites = sampled_surroundings[np.argmin(distances, axis=1)]
+        move_to_sites = surroundings[np.argmin(distances, axis=1)]
         unique_move_to_sites = np.unique(move_to_sites)
 
         for s in unique_move_to_sites:
@@ -286,7 +302,9 @@ def load_game_map(myID, game_map):
 
 Map = namedtuple('Map', 'w h')
 
-test_game_map = GameMap("4 4", "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16", "1 0 15 1 71 96 93 157 151 141 63 93 157 93 96 71 93 63 141 101")
+#test_game_map = GameMap("4 4", "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16", "1 0 15 1 71 96 93 157 151 141 63 93 157 93 96 71 93 63 141 101")
+
+test_game_map = GameMap("4 4", "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16", "1 0 2 1 7 0 1 2 5 0 71 96 93 157 151 141 63 93 157 93 96 71 93 63 141 101")
 
 d = load_game_map(1, test_game_map)
 d.analyze()
