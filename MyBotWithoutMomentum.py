@@ -8,11 +8,9 @@ STR_MAX = 250
 STR_NAN = -1
 PROD_NAN = -1
 IDX_NAN = -1
-DIRECTION_NAN = -1
 INT_TRUE = 1
 INT_FALSE = 0
 
-ROUNDS_INF = 999
 STATE_INIT, STATE_DONE = (1, 2)
 
 class Geo:
@@ -133,8 +131,7 @@ class GameData:
         boundary = self.sites_boundary[:, 0]
         t = lookup_str(np.where( self.sites_boundary[:,1:5] != 0, self.geo.adjs[:,0:4][boundary], IDX_NAN))
         other_str = np.min(np.where(t == STR_NAN, 999, t), axis=1)
-        self.str_diffs = self.geo.get_container()
-        self.str_diffs[boundary] = other_str - lookup_str(boundary)
+        self.sites_str_diff = np.c_[ boundary, other_str - lookup_str(boundary)]
 
     def _build_nearby_enemies(self):
         def _any_enemy_in_sites(sites):
@@ -145,60 +142,24 @@ class GameData:
         self.nearby_enemy[ self.sites_nearby_enemy ] = True
 
 
+
+
 class Strategy:
     def __init__(self, gameData):
         self.logger = None
-        self.MAX_STR_STILL = 60
-        self.INIT_MOMENTUM = 1
         self.gd = gameData
         self.geo = gameData.geo
         self.states = self.geo.get_container()
         self.states[:] = STATE_INIT
         self.gotos = self.geo.get_container()
         self.gotos[:] = IDX_NAN
-        self.directions = self.geo.get_container()
-        self.directions[:] = DIRECTION_NAN
-        self.comefroms = np.zeros( (self.geo.n, 2), dtype=int)
-        self.comefroms[:,0] = IDX_NAN
-        self.momentums = np.zeros( (self.geo.n, 2), dtype=int)
-        self.momentums[:,0] = DIRECTION_NAN
+        self.comefroms = self.geo.get_container()
+        self.comefroms[:] = IDX_NAN
+        self.MAX_STR_STILL = 60
 
     def add_logger(self, logger):
         self.logger = logger
 
-    def _create_move(self, from_s, to_s, direction, multiple=False, gain_momentum=False):
-        self.states[from_s] = STATE_DONE
-        self.gotos[from_s] = to_s
-        self.directions[from_s] = direction
-
-        strs_from = self.gd.strs[from_s]
-        str_compared = self.comefroms[to_s, 1] < strs_from
-        self.comefroms[to_s, 0] = np.where( str_compared, from_s  , self.comefroms[to_s, 0])
-        self.comefroms[to_s, 1] = np.where( str_compared, strs_from, self.comefroms[to_s, 1])
-
-        self.momentums[to_s, 1] = np.where(self.momentums[to_s, 1] > 0, self.momentums[to_s, 1] - 1, 0)
-
-        if gain_momentum:
-            self.momentums[to_s] = [direction, self.INIT_MOMENTUM]
-
-        if multiple:
-            return [Move(self.gd.squares[s],direction) for s in from_s]
-        else:
-            return Move(self.gd.squares[from_s], direction)
-
-    def keep_momentum(self, targets):
-        moves = []
-        for target in targets:
-            if self.momentums[target, 0] != DIRECTION_NAN and self.momentums[target, 1] > 0:
-                move_to = self.geo.adjs[target, self.momentums[target, 0]]
-                moves.append(self._create_move(target, move_to, self.momentums[target, 0]))
-        return moves
-
-    def import_momentums(self, momentums):
-        self.momentums = momentums
-
-    def export_momentums(self):
-        return self.momentums.copy()
 
     def move_strong(self):
         targets =  np.nonzero(np.logical_and(self.gd.strs > self.MAX_STR_STILL, self.gd.is_interior))[0].T
@@ -207,18 +168,9 @@ class Strategy:
         if len(targets) == 0:
             return moves
 
-        moves = moves + self.keep_momentum(targets)
-
-        targets = np.array([ t for t in targets if self.states[t] == STATE_INIT ])
-
-        if len(targets) == 0:
-            return moves
-
         calculate_distance = np.vectorize(lambda loc1, loc2: self.geo.distance(loc1, loc2))
-        surroundings = np.array([ s for s in self.gd.sites_touch_mine[:,0] if not self.gd.nearby_enemy[s]])
 
-        if len(surroundings) == 0:
-            return moves
+        surroundings = np.array([ s for s in self.gd.sites_touch_mine[:,0] if not self.gd.nearby_enemy[s]])
 
         enemies = self.gd.sites_nearby_enemy
         enemy_alert_radius = 15
@@ -227,6 +179,7 @@ class Strategy:
             ds[ ds < enemy_alert_radius ] = -1
             surroundings = surroundings[ np.all( ds != -1, axis=0)]
             surroundings = np.concatenate((enemies, surroundings))
+
 
         if len(surroundings) == 0:
             return moves
@@ -240,7 +193,11 @@ class Strategy:
             target_group = targets[move_to_sites == s]
             group_center = np.average( self.geo.locs[target_group], axis=0)
             group_direction = self.geo.get_direction(group_center, self.geo.locs[s])
-            moves += self._create_move(target_group, self.geo.adjs[target_group, group_direction], group_direction, multiple=True, gain_momentum=True)
+            moves += [ Move(self.gd.squares[i], group_direction) for i in target_group ]
+            self.states[target_group] = STATE_DONE
+            self.gotos[target_group] = self.geo.adjs[target_group, group_direction]
+            self.comefroms[self.gotos[target_group]] = target_group
+
         return moves
 
 
@@ -257,7 +214,7 @@ class Strategy:
             to_sort.sort(order=['breaths', 'production'])
             move_to_site = None
 
-            if self.comefroms[target,0] == IDX_NAN:
+            if self.comefroms[target] == IDX_NAN:
                 defeatables = [ e for e in to_sort if self.gd.strs[e['site']] < self.gd.strs[target]]
                 if len(defeatables) > 0:
                     move_to_site = defeatables[-1]['site']
@@ -266,7 +223,11 @@ class Strategy:
 
             if move_to_site is not None:
                 direction = self.geo.get_direction(self.geo.locs[target], self.geo.locs[move_to_site])
-                moves.append(self._create_move(target, move_to_site, direction))
+                moves.append(Move(self.gd.squares[target], direction))
+                self.states[target] = STATE_DONE
+                self.gotos[target] = move_to_site
+                self.comefroms[move_to_site] = target
+
         return moves
 
     def converging_attack(self):
@@ -279,48 +240,10 @@ class Strategy:
 
             if sum([ self.gd.strs[s] for (direction, s) in mine_not_moved]) > self.gd.strs[point]:
                 for direction, s in mine_not_moved:
-                    d = self.geo.reverse_direction(direction)
-                    moves.append(self._create_move(s, point, d))
-        return moves
-
-    def focus_force(self):
-        moves = []
-        bds = self.gd.sites_boundary[:,0]
-        prods = self.gd.prods[bds]
-        rounds_to_conquer = np.where(prods > 0, self.gd.str_diffs[bds] / prods, ROUNDS_INF)
-
-        if (np.min(rounds_to_conquer) <= 2):
-            return moves
-
-        territory_of_interest = np.array( [ s for s in self.gd.sites_touch_mine[:,0] if self.gd.prods[s] > 0 ] )
-        sort_type = [('payback_period', int), ('strs', int), ('site', int)]
-
-        to_sort = np.array([ ( self.gd.strs[s] // self.gd.prods[s] , self.gd.strs[s] , s) for s in territory_of_interest ], dtype=sort_type)
-        to_sort.sort(order=['payback_period', 'strs'])
-
-        target = to_sort[0]['site']
-
-        mine = [ s for s in self.geo.adjs[target, 0:4] if self.gd.is_mine[s]]
-        focus_at = mine[np.argmin([ self.gd.str_diffs[s] for s in mine ])]
-
-        def _gather_at_focus(focus):
-            min_str_to_move = 10
-            targets = []
-            if self.states[focus] == STATE_INIT:
-                self.states[focus] = STATE_DONE
-
-            for direction, s in enumerate(self.geo.adjs[focus, 0:4]):
-                if self.gd.is_mine[s] and self.states[s] == STATE_INIT:
-                    if self.gd.strs[s] >= min_str_to_move:
-                        d = self.geo.reverse_direction(direction)
-                        moves.append( self._create_move(s, focus, d))
-                    targets.append(s)
-            return targets
-
-        secondary_focuses = _gather_at_focus(focus_at)
-
-        for s in secondary_focuses:
-            _gather_at_focus(s)
+                    moves.append(Move(self.gd.squares[s], self.geo.reverse_direction(direction)))
+                    self.states[s] = STATE_DONE
+                    self.gotos[s] = point
+                    self.comefroms[point] = s #may need to extend this to array
 
         return moves
 
@@ -345,17 +268,17 @@ class Strategy:
                     _targets.append(goto)
                     direction = self.geo.get_direction(self.geo.locs[s], self.geo.locs[goto])
                     move_to = self.geo.adjs[goto, direction]
-                    moves.append(self._create_move(goto, move_to, direction))
+                    moves.append(Move(self.gd.squares[goto], direction))
+                    self.states[goto] = STATE_DONE
+                    self.gotos[goto] = move_to
+                    self.comefroms[move_to] = goto #may need to extend this to array
 
             targets = _targets
 
         return moves
 
     def execute(self):
-        moves = self.move_strong() + self.expand() + self.converging_attack() + self.run_from_overstr()
-        if len(moves) == 0:
-            moves = moves + self.focus_force()
-        return moves + self.finish_not_moved()
+        return self.move_strong() + self.expand() + self.converging_attack() + self.run_from_overstr() + self.finish_not_moved()
 
 
 
@@ -374,19 +297,18 @@ def load_game_map(myID, game_map):
         strengths[i] = strength
         productions[i] = production
 
+
     return GameData(myID, geo, owners, strengths, productions, game_map)
 
-#Map = namedtuple('Map', 'w h')
+Map = namedtuple('Map', 'w h')
 
 #test_game_map = GameMap("4 4", "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16", "1 0 15 1 71 96 93 157 151 141 63 93 157 93 96 71 93 63 141 101")
 
-#test_game_map = GameMap("4 4", "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16", "1 0 2 1 7 0 1 2 5 0 71 96 93 157 151 141 63 93 157 93 96 71 93 63 141 101")
+test_game_map = GameMap("4 4", "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16", "1 0 2 1 7 0 1 2 5 0 71 96 93 157 151 141 63 93 157 93 96 71 93 63 141 101")
 
-#test_game_map = GameMap("4 4", "1 2 3 4 5 20 7 8 9 10 11 12 13 14 15 16", "6 0 1 1 2 0 2 1 5 0 100 100 100 100 100 100 10 100 100 11 5 100 100 100 50 100")
-
-#d = load_game_map(1, test_game_map)
-#d.analyze()
-#s = Strategy(d)
+d = load_game_map(1, test_game_map)
+d.analyze()
+s = Strategy(d)
 #s.execute()
 
 
@@ -397,8 +319,6 @@ if __name__ == "__main__":
     file_log = None
     #file_log = open("debug" + str(myID) + ".log", "w")
 
-    momentums = None
-
     while True:
         game_map.get_frame()
 
@@ -407,13 +327,10 @@ if __name__ == "__main__":
 
         gd.analyze()
         strategy = Strategy(gd)
+
         strategy.add_logger(file_log)
 
-        if momentums is not None:
-            strategy.import_momentums(momentums)
 
         moves = strategy.execute()
-
-        momentums = strategy.export_momentums()
 
         hlt.send_frame(moves)
