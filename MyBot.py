@@ -108,8 +108,8 @@ class GameData:
         self._build_strength_difference_at_boundary()
         self._build_nearby_enemies()
 
-        if self.logger is not None:
-            self.logger.write("\nowners\n%s\n" % str( self.owners.reshape(self.geo.h, self.geo.w)))
+
+        #self.logger.write("\nowners\n%s\n" % str( self.owners.reshape(self.geo.h, self.geo.w)))
 
 
     def _build_boundary(self):
@@ -158,7 +158,7 @@ class Strategy:
         self.gotos[:] = IDX_NAN
         self.directions = self.geo.get_container()
         self.directions[:] = DIRECTION_NAN
-        self.comefroms = np.zeros( (self.geo.n, 2), dtype=int)
+        self.comefroms = np.zeros( (self.geo.n, 3), dtype=int) # strongest_site, str, number
         self.comefroms[:,0] = IDX_NAN
         self.momentums = np.zeros( (self.geo.n, 2), dtype=int)
         self.momentums[:,0] = DIRECTION_NAN
@@ -166,7 +166,7 @@ class Strategy:
     def add_logger(self, logger):
         self.logger = logger
 
-    def _create_move(self, from_s, to_s, direction, multiple=False, gain_momentum=False):
+    def _create_move(self, strategy, from_s, to_s, direction, gain_momentum=False):
         self.states[from_s] = STATE_DONE
         self.gotos[from_s] = to_s
         self.directions[from_s] = direction
@@ -175,24 +175,28 @@ class Strategy:
         str_compared = self.comefroms[to_s, 1] < strs_from
         self.comefroms[to_s, 0] = np.where( str_compared, from_s  , self.comefroms[to_s, 0])
         self.comefroms[to_s, 1] = np.where( str_compared, strs_from, self.comefroms[to_s, 1])
+        self.comefroms[to_s, 2] = self.comefroms[to_s, 2] + 1
 
         self.momentums[to_s, 1] = np.where(self.momentums[to_s, 1] > 0, self.momentums[to_s, 1] - 1, 0)
-
         if gain_momentum:
             self.momentums[to_s] = [direction, self.INIT_MOMENTUM]
 
-        if multiple:
-            return [Move(self.gd.squares[s],direction) for s in from_s]
-        else:
-            return Move(self.gd.squares[from_s], direction)
+    def _extract_move(self):
+        moves = []
+        for s in np.nonzero(self.gd.is_mine)[0]:
+            direction = STILL
+            if self.directions[s] != DIRECTION_NAN:
+                direction = self.directions[s]
+            square = self.gd.squares[s]
+            moves.append(Move(square, direction))
+        return moves
+
 
     def keep_momentum(self, targets):
-        moves = []
         for target in targets:
             if self.momentums[target, 0] != DIRECTION_NAN and self.momentums[target, 1] > 0:
                 move_to = self.geo.adjs[target, self.momentums[target, 0]]
-                moves.append(self._create_move(target, move_to, self.momentums[target, 0]))
-        return moves
+                self._create_move("keep_momentum",  target, move_to, self.momentums[target, 0])
 
     def import_momentums(self, momentums):
         self.momentums = momentums
@@ -202,23 +206,22 @@ class Strategy:
 
     def move_strong(self):
         targets =  np.nonzero(np.logical_and(self.gd.strs > self.MAX_STR_STILL, self.gd.is_interior))[0].T
-        moves = []
 
         if len(targets) == 0:
-            return moves
+            return
 
-        moves = moves + self.keep_momentum(targets)
+        self.keep_momentum(targets)
 
         targets = np.array([ t for t in targets if self.states[t] == STATE_INIT ])
 
         if len(targets) == 0:
-            return moves
+            return
 
         calculate_distance = np.vectorize(lambda loc1, loc2: self.geo.distance(loc1, loc2))
         surroundings = np.array([ s for s in self.gd.sites_touch_mine[:,0] if not self.gd.nearby_enemy[s]])
 
         if len(surroundings) == 0:
-            return moves
+            return
 
         enemies = self.gd.sites_nearby_enemy
         enemy_alert_radius = 15
@@ -229,7 +232,7 @@ class Strategy:
             surroundings = np.concatenate((enemies, surroundings))
 
         if len(surroundings) == 0:
-            return moves
+            return
 
         distances = calculate_distance(targets[:,np.newaxis], surroundings)
 
@@ -240,13 +243,16 @@ class Strategy:
             target_group = targets[move_to_sites == s]
             group_center = np.average( self.geo.locs[target_group], axis=0)
             group_direction = self.geo.get_direction(group_center, self.geo.locs[s])
-            moves += self._create_move(target_group, self.geo.adjs[target_group, group_direction], group_direction, multiple=True, gain_momentum=True)
-        return moves
+
+            for target in target_group:
+                target_move_to = self.geo.adjs[target, group_direction]
+                self._create_move("move_strong", target, target_move_to, group_direction, gain_momentum=True)
+
+
 
 
     def expand(self):
         sort_type = [('breaths', int), ('production', int), ('site', int)]
-        moves = []
 
         for b_info in self.gd.sites_boundary:
             target = b_info[0]
@@ -257,21 +263,17 @@ class Strategy:
             to_sort.sort(order=['breaths', 'production'])
             move_to_site = None
 
-            if self.comefroms[target,0] == IDX_NAN:
-                defeatables = [ e for e in to_sort if self.gd.strs[e['site']] < self.gd.strs[target]]
-                if len(defeatables) > 0:
-                    move_to_site = defeatables[-1]['site']
-            else:
-                move_to_site = to_sort[-1]['site']
+            defeatables = [ e for e in to_sort if self.gd.strs[e['site']] < self.gd.strs[target]]
+            if len(defeatables) > 0:
+                move_to_site = defeatables[-1]['site']
+
 
             if move_to_site is not None:
                 direction = self.geo.get_direction(self.geo.locs[target], self.geo.locs[move_to_site])
-                moves.append(self._create_move(target, move_to_site, direction))
-        return moves
+                self._create_move("expand", target, move_to_site, direction)
 
     def converging_attack(self):
         converging_points = self.gd.sites_touch_mine[:,0][self.gd.sites_touch_mine[:,1] > 1]
-        moves = []
 
         for point in converging_points:
             mine_not_moved = [ (direction, s) for (direction, s) in enumerate( self.geo.adjs[point, 0:4])
@@ -280,17 +282,20 @@ class Strategy:
             if sum([ self.gd.strs[s] for (direction, s) in mine_not_moved]) > self.gd.strs[point]:
                 for direction, s in mine_not_moved:
                     d = self.geo.reverse_direction(direction)
-                    moves.append(self._create_move(s, point, d))
-        return moves
+                    self._create_move("converging_attack",  s, point, d)
 
     def focus_force(self):
-        moves = []
         bds = self.gd.sites_boundary[:,0]
         prods = self.gd.prods[bds]
-        rounds_to_conquer = np.where(prods > 0, self.gd.str_diffs[bds] / prods, ROUNDS_INF)
 
-        if (np.min(rounds_to_conquer) <= 2):
-            return moves
+        with np.errstate(divide='ignore'):
+            rounds_to_conquer = self.gd.str_diffs[bds] / prods
+
+        rounds_to_conquer[np.isnan(rounds_to_conquer)] = ROUNDS_INF
+        min_rounds_to_conquer = np.min(np.where(prods > 0, self.gd.str_diffs[bds] / prods, ROUNDS_INF))
+
+        if (min_rounds_to_conquer <= 2):
+            return
 
         territory_of_interest = np.array( [ s for s in self.gd.sites_touch_mine[:,0] if self.gd.prods[s] > 0 ] )
         sort_type = [('payback_period', int), ('strs', int), ('site', int)]
@@ -303,6 +308,9 @@ class Strategy:
         mine = [ s for s in self.geo.adjs[target, 0:4] if self.gd.is_mine[s]]
         focus_at = mine[np.argmin([ self.gd.str_diffs[s] for s in mine ])]
 
+        move_tos = [focus_at]
+        levels = min_rounds_to_conquer
+
         def _gather_at_focus(focus):
             min_str_to_move = 10
             targets = []
@@ -313,29 +321,22 @@ class Strategy:
                 if self.gd.is_mine[s] and self.states[s] == STATE_INIT:
                     if self.gd.strs[s] >= min_str_to_move:
                         d = self.geo.reverse_direction(direction)
-                        moves.append( self._create_move(s, focus, d))
-                    targets.append(s)
+                        self._create_move("focus_force", s, focus, d)
+
+                        targets.append(s)
             return targets
 
-        secondary_focuses = _gather_at_focus(focus_at)
+        move_tos = [focus_at]
+        levels = min_rounds_to_conquer
 
-        for s in secondary_focuses:
-            _gather_at_focus(s)
+        while len(move_tos) > 0 and levels > 0:
+            for s in move_tos:
+                move_tos += _gather_at_focus(s)
+            levels -= 1
 
-        return moves
-
-
-    def finish_not_moved(self):
-        moves = []
-        for target in np.where(self.states != STATE_DONE)[0]:
-            moves.append(Move(self.gd.squares[target], STILL))
-            self.states[target] = STATE_DONE
-
-        return moves
 
     def run_from_overstr(self):
         targets = np.where(self.gotos != IDX_NAN)[0]
-        moves = []
 
         while len(targets) > 0:
             _targets = []
@@ -345,19 +346,38 @@ class Strategy:
                     _targets.append(goto)
                     direction = self.geo.get_direction(self.geo.locs[s], self.geo.locs[goto])
                     move_to = self.geo.adjs[goto, direction]
-                    moves.append(self._create_move(goto, move_to, direction))
-
+                    moves.append(self._create_move("run_from_overstr", goto, move_to, direction))
             targets = _targets
 
-        return moves
+    def avoid_overstr(self):
+        sites = np.where(self.comefroms[:,2] > 1)[0]
+
+        for s in sites:
+            if not self.gd.is_mine[s]:
+                continue
+
+            origins = np.where(self.gotos == s)[0]
+            if self.gotos[s] != IDX_NAN:
+                site_str = 0
+            else:
+                site_str = self.gd.strs[s]
+
+            if site_str + np.sum( self.gd.strs[origins]) > STR_MAX:
+                direction_of_the_strongest = self.directions[self.comefroms[s, 0]]
+                for o in origins:
+                    move_to = self.geo.adjs[o, direction_of_the_strongest]
+                    self._create_move("avoid_overstr", o, move_to, direction_of_the_strongest)
+
+                    # has bug. didn't update comefroms
 
     def execute(self):
-        moves = self.move_strong() + self.expand() + self.converging_attack() + self.run_from_overstr()
-        if len(moves) == 0:
-            moves = moves + self.focus_force()
-        return moves + self.finish_not_moved()
-
-
+        self.focus_force()
+        self.move_strong()
+        self.expand()
+        self.converging_attack()
+        self.run_from_overstr()
+        self.avoid_overstr()
+        return self._extract_move()
 
 
 def load_game_map(myID, game_map):
